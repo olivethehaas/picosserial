@@ -18,37 +18,40 @@ if (PICO_SDK_VERSION_STRING VERSION_LESS "1.4.0")
   message(FATAL_ERROR "Raspberry Pi Pico SDK version 1.4.0 (or later) required. Your version is ${PICO_SDK_VERSION_STRING}")
 endif()
 
-project(smartserial C CXX ASM)
+project(picosserial C CXX ASM)
 
 # Initialise the Raspberry Pi Pico SDK
 pico_sdk_init()
 
 # Add executable. Default name is the project name, version 0.1
 
-add_executable(smartserial smartserial.c )
+add_executable(picosserial picosserial.c sserial.c crc8.c)
 
-pico_set_program_name(smartserial "smartserial")
-pico_set_program_version(smartserial "0.1")
+pico_set_program_name(picosserial "picosserial")
+pico_set_program_version(picosserial "0.1")
 
-pico_enable_stdio_uart(smartserial 1)
-pico_enable_stdio_usb(smartserial 0)
+pico_enable_stdio_uart(picosserial 1)
+pico_enable_stdio_usb(picosserial 0)
 
 # Add the standard library to the build
-target_link_libraries(smartserial
-        pico_stdlib)
+target_link_libraries(picosserial
+        pico_stdlib
+        pico_unique_id
+        hardware_dma
+        hardware_clocks)
 
 # Add the standard include files to the build
-target_include_directories(smartserial PRIVATE
+target_include_directories(picosserial PRIVATE
   ${CMAKE_CURRENT_LIST_DIR}
   ${CMAKE_CURRENT_LIST_DIR}/.. # for our common lwipopts or any other standard includes, if required
 )
 
 # Add any user requested libraries
-target_link_libraries(smartserial 
+target_link_libraries(picosserial 
+        hardware_clocks
         hardware_dma
         hardware_uart
-        hardware_dma
-        hardware_clocks)
+        )
 
-pico_add_extra_outputs(smartserial)
+pico_add_extra_outputs(picosserial)
 

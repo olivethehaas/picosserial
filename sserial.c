@@ -1,4 +1,3 @@
-#include "sserial_comp.h"
 /*
 * This file is part of the stmbl project.
 *
@@ -23,62 +22,16 @@
 #include "pico/stdlib.h"
 #include "hardware/uart.h"
 #include "hardware/dma.h"
-#include "hal.h"
+#include "sserial_comp.h"
 #include "math.h"
 #include "sserial.h"
 #include "crc8.h"
 #include <string.h>
+#include "pico/unique_id.h"
+#include "hardware/structs/systick.h"
+#include "hardware/clocks.h"
 
 
-#define UART_ID uart1
-#define BAUD_RATE 2500000
-#define DATA_BITS 8
-#define STOP_BITS 1
-#define PARITY    UART_PARITY_NONE
-#define DMA_UART_RX 0
-#define DMA_CTRL 1
-#define DMA_UART_TX 2
-
-// We are using pins 0 and 1, but see the GPIO function select table in the
-// datasheet for information on which other pins can be used.
-#define UART_TX_PIN 4
-#define UART_RX_PIN 5
-
-
-
-HAL_COMP(sserial);
-
-// pins
-HAL_PIN(error);
-HAL_PIN(crc_error);  //counts crc errors, is never reset
-HAL_PIN(connected);  //connection status TODO: not stable during startup, needs link to pd
-HAL_PIN(timeout);    // 20khz / 1khz * 2 reads = 40
-
-HAL_PIN(pos_cmd);
-HAL_PIN(pos_cmd_d);
-HAL_PIN(pos_fb);
-HAL_PIN(vel_fb);
-HAL_PIN(current);
-HAL_PIN(scale);
-
-HAL_PIN(clock_scale);
-HAL_PIN(available);
-HAL_PIN(phase);
-
-HAL_PIN(in0);
-HAL_PIN(in1);
-HAL_PIN(in2);
-HAL_PIN(in3);
-HAL_PIN(fault);
-
-HAL_PIN(out0);
-HAL_PIN(out1);
-HAL_PIN(out2);
-HAL_PIN(out3);
-HAL_PIN(enable);
-HAL_PIN(index_clear);
-HAL_PIN(index_out);
-HAL_PIN(pos_advance);
 
 static volatile uint8_t rxbuf[128];  //rx dma buffer
 static volatile uint8_t txbuf[128];  //tx dma buffer
@@ -91,6 +44,7 @@ static const char name[] = LBPCardName;
 static unit_no_t unit;
 static uint32_t max_waste_ticks;
 static uint32_t block_bytes;
+static pico_unique_board_id_t unit_id;
 
 #pragma pack(push, 1) // alignement sur un octet
 //*****************************************************************************
@@ -209,7 +163,7 @@ static uint8_t crc8(uint8_t *addr, uint8_t len) {
 
 static void send(uint8_t len, uint8_t docrc) {
   timeout = 0;
-  dma_channel_set_read_addr(DMA_UART_TX, txbuf, false)
+  dma_channel_set_read_addr(DMA_UART_TX, txbuf, false);
   if(docrc) {
     txbuf[len] = crc8((uint8_t *)txbuf, len);
     dma_channel_set_trans_count(DMA_UART_TX, (uint32_t)len + 1, true);
@@ -218,6 +172,30 @@ static void send(uint8_t len, uint8_t docrc) {
     dma_channel_set_trans_count(DMA_UART_TX, (uint32_t)len, true);
   }
 }
+
+
+void enableSysTick(void)
+{
+  systick_hw->csr = 0;
+  systick_hw->rvr = M0PLUS_SYST_RVR_BITS;                                                                        // 24 bits
+  systick_hw->csr = 0x5; //processor clock, no exception
+}
+
+uint32_t hal_get_systick_value(void)
+{
+  return ((uint32_t)systick_hw->cvr);
+}
+
+uint32_t hal_get_systick_reload(void)
+{
+  return ((uint32_t)systick_hw->rvr);
+}
+uint32_t hal_get_systick_freq(void)
+{
+  return (clock_get_hz(clk_sys));
+}
+
+
 
 //v3
 //pb13 txen
@@ -232,11 +210,10 @@ static void send(uint8_t len, uint8_t docrc) {
 
 //TODO: lbp command 0xe6 to set mode
 
-static void hw_init(hal_pin_inst_t *pin_ptr) {
+void hw_init(sserial_pin_ctx_t *pins) {
   // struct sserial_ctx_t * ctx = (struct sserial_ctx_t *)ctx_ptr;
-  struct sserial_pin_ctx_t *pins = (struct sserial_pin_ctx_t *)pin_ptr;
 
-  PIN(timeout) = 100.0;  // 20khz / 1khz * 2 reads = 40
+  pins->timeout = 100.0;  // 20khz / 1khz * 2 reads = 40
 
 
 // init gpio for uart 
@@ -245,8 +222,8 @@ static void hw_init(hal_pin_inst_t *pin_ptr) {
   uart_init(UART_ID, BAUD_RATE);
   // Set the TX and RX pins by using the function select on the GPIO
   // Set datasheet for more information on function select
-  gpio_set_function(UART_TX_PIN, GPIO_FUNC_UART);
-  gpio_set_function(UART_RX_PIN, GPIO_FUNC_UART);
+  gpio_set_function(UART1_TX_PIN, GPIO_FUNC_UART);
+  gpio_set_function(UART1_RX_PIN, GPIO_FUNC_UART);
   // Actually, we want a different speed
   // The call will return the actual baud rate selected, which will be as close as
   // possible to that requested
@@ -274,7 +251,7 @@ static void hw_init(hal_pin_inst_t *pin_ptr) {
   dma_channel_configure(
         DMA_CTRL, 
         &c,
-        &dma_hw->ch[DMA_CTRL].read_addr, // write adress 
+        &dma_hw->ch[DMA_UART_RX].write_addr, // write adress 
         &adress_rxbuf, //read adress
         1,
         false
@@ -286,7 +263,7 @@ static void hw_init(hal_pin_inst_t *pin_ptr) {
   channel_config_set_read_increment(&c2, false);
   channel_config_set_write_increment(&c2, true);
   channel_config_set_chain_to(&c2, DMA_CTRL);
-  channel_config_set_dreq(&c2, uart_get_dreq(uart1, false)) // DMA paced by UART RX
+  channel_config_set_dreq(&c2, uart_get_dreq(uart1, false)); // DMA paced by UART RX
 
 
   dma_channel_configure(
@@ -298,12 +275,12 @@ static void hw_init(hal_pin_inst_t *pin_ptr) {
         false
         );
 
- dma_channel_config c2 = dma_channel_get_default_config(DMA_UART_TX);
+ dma_channel_config c3 = dma_channel_get_default_config(DMA_UART_TX);
 
   channel_config_set_transfer_data_size(&c3, DMA_SIZE_8);
   channel_config_set_read_increment(&c3, true);
   channel_config_set_write_increment(&c3, false);
-  channel_config_set_dreq(&c3, uart_get_dreq(uart1, true)) // DMA paced by UART TX
+  channel_config_set_dreq(&c3, uart_get_dreq(uart1, true));// DMA paced by UART TX
 
   dma_channel_configure(
         DMA_UART_TX, 
@@ -315,50 +292,52 @@ static void hw_init(hal_pin_inst_t *pin_ptr) {
         );
 
   //generate unit number from 96bit unique chip ID
-  unit.unit = U_ID[0] ^ U_ID[1] ^ U_ID[2];
 
+  pico_get_unique_board_id(&unit_id);
+  unit.byte[0] = unit_id.id[0];
+  unit.byte[1] = unit_id.id[1];
+  unit.byte[2] = unit_id.id[2];
+  unit.byte[3] = unit_id.id[3]; 
+  
   rxpos   = 0;
   timeout = 1000;  //make sure we start in timeout
 
   //bytes to wait before expected end of transmission to prevent timeouts
   block_bytes = 5;
+  enableSysTick();
   //calculate timeout in systicks for block_bytes
   max_waste_ticks = (1.0 / 2500000.0) * 11.0 * (float)block_bytes / (1.0f / (float)hal_get_systick_freq());
 
-  PIN(clock_scale) = 1.0;
-  PIN(phase) = 0;
+  pins->clock_scale= 1.0;
+  pins->phase = 0;
+
+  dma_start_channel_mask(1u << DMA_CTRL); // start CTRL DMA
+  dma_start_channel_mask(1u << DMA_UART_TX);
 }
 
-// static void rt_func(float period, void *ctx_ptr, hal_pin_inst_t *pin_ptr) {
-//   struct sserial_pin_ctx_t *pins = (struct sserial_pin_ctx_t *)pin_ptr;
-//   //struct sserial_ctx_t *mem = (struct sserial_ctx_t *)ctx_ptr;
-//   PIN(phase) = 0;
-// }
-
-static void frt_func(float period, void *ctx_ptr, hal_pin_inst_t *pin_ptr) {
-  struct sserial_pin_ctx_t *pins = (struct sserial_pin_ctx_t *)pin_ptr;
-  //struct sserial_ctx_t *mem = (struct sserial_ctx_t *)ctx_ptr;
+void frt_func(sserial_pin_ctx_t *pins) {
+  gpio_put(16, true);
   //next received packet will be written to bufferpos
   uint32_t bufferpos= sizeof(rxbuf) - (dma_hw->ch[DMA_UART_RX].transfer_count);
   //how many packets we have the the rx buffer for processing
   uint32_t available = (bufferpos - rxpos + sizeof(rxbuf)) % sizeof(rxbuf);
 
-  PIN(phase) += 1.0;
-  pins->phase.source->value += 1.0
+  pins->phase += 1.0;
+
 
   uint32_t goal = 5;
-  PIN(clock_scale) = 1.0;
-  if(PIN(phase) > 3){
-    PIN(phase) = 0;
+  pins->clock_scale= 1.0;
+  if(pins->phase > 3){
+    pins->phase = 0;
     if(available > goal){
-    PIN(clock_scale) = 0.9;
+    pins->clock_scale = 0.9;
     }
     else if(available < goal && available > 0){
-      PIN(clock_scale) = 1.1;
+      pins->clock_scale = 1.1;
     }
   }
 
-  PIN(available) = available;
+  pins->available = available;
 
   if(available >= 1) {
     lbp.byte = rxbuf[rxpos];
@@ -428,14 +407,14 @@ static void frt_func(float period, void *ctx_ptr, hal_pin_inst_t *pin_ptr) {
         } while(available < discovery.output + 2 && wait_ticks <= max_waste_ticks);
         //TODO: fault handling on timeout...
         //set input pins
-        data_in.pos_fb  = PIN(pos_fb) + PIN(vel_fb) * PIN(pos_advance);
-        data_in.vel_fb  = PIN(vel_fb);
-        data_in.current = CLAMP(PIN(current) / (30.0f / 128.0f), -127, 127);
-        data_in.in_0    = (PIN(in0) > 0) ? 1 : 0;
-        data_in.in_1    = (PIN(in1) > 0) ? 1 : 0;
-        data_in.in_2    = (PIN(in2) > 0) ? 1 : 0;
-        data_in.in_3    = (PIN(in3) > 0) ? 1 : 0;
-        data_in.fault   = (PIN(fault) > 0) ? 1 : 0;
+        data_in.pos_fb  = pins->pos_fb + pins->vel_fb * pins->pos_advance;
+        data_in.vel_fb  = pins->vel_fb;
+        data_in.current = pins->current;
+        data_in.in_0    = (pins->in0 > 0) ? 1 : 0;
+        data_in.in_1    = (pins->in1 > 0) ? 1 : 0;
+        data_in.in_2    = (pins->in2 > 0) ? 1 : 0;
+        data_in.in_3    = (pins->in3 > 0) ? 1 : 0;
+        data_in.fault   = (pins->fault > 0) ? 1 : 0;
 
         //copy output pins from rx buffer
         for(int i = 0; i < discovery.output; i++) {
@@ -443,8 +422,8 @@ static void frt_func(float period, void *ctx_ptr, hal_pin_inst_t *pin_ptr) {
         }
 
         //set bidirectional pins
-        PIN(index_out)       = data_out.index_enable;
-        data_in.index_enable = (PIN(index_clear) > 0) ? 0 : data_out.index_enable;
+        pins->index_out       = data_out.index_enable;
+        data_in.index_enable = (pins->index_clear > 0) ? 0 : data_out.index_enable;
 
         //copy input pins to tx buffer
         txbuf[0] = 0x00;  //fault byte
@@ -453,32 +432,34 @@ static void frt_func(float period, void *ctx_ptr, hal_pin_inst_t *pin_ptr) {
         }
         if(crc_reuest(discovery.output + 1)) {
           //send buffer
-          dma_channel_set_read_addr(DMA_UART_TX, txbuf, false)
+          dma_channel_abort(DMA_UART_TX);
+          dma_channel_set_read_addr(DMA_UART_TX, txbuf, false);
           dma_channel_set_trans_count(DMA_UART_TX, (uint32_t)discovery.input + 1, true);
+
           txbuf[discovery.input] = crc8((uint8_t *)txbuf, discovery.input);
           //send(discovery.input, 1);
           timeout = 0;
           //set output pins
 
-          PIN(pos_cmd)   = data_out.pos_cmd;
-          PIN(pos_cmd_d) = data_out.vel_cmd;
-          PIN(out0)      = data_out.out_0;
-          PIN(out1)      = data_out.out_1;
-          PIN(out2)      = data_out.out_2;
-          PIN(out3)      = data_out.out_3;
-          PIN(enable)    = data_out.enable;
+          pins->pos_cmd   = data_out.pos_cmd;
+          pins->pos_cmd_d = data_out.vel_cmd;
+          pins->out0      = data_out.out_0;
+          pins->out1      = data_out.out_1;
+          pins->out2      = data_out.out_2;
+          pins->out3      = data_out.out_3;
+          pins->enable    = data_out.enable;
         } else {
-          PIN(crc_error)
+          pins->crc_error
           ++;
-          PIN(connected) = 0;
-          PIN(error)     = 1;
-          PIN(pos_cmd)   = 0;
-          PIN(pos_cmd_d) = 0;
-          PIN(out0)      = 0;
-          PIN(out1)      = 0;
-          PIN(out2)      = 0;
-          PIN(out3)      = 0;
-          PIN(enable)    = 0;
+          pins->connected = 0;
+          pins->error     = 1;
+          pins->pos_cmd   = 0;
+          pins->pos_cmd_d = 0;
+          pins->out0      = 0;
+          pins->out1      = 0;
+          pins->out2      = 0;
+          pins->out3      = 0;
+          pins->enable    = 0;
         }
         rxpos += discovery.output + 2;
       }
@@ -523,7 +504,7 @@ static void frt_func(float period, void *ctx_ptr, hal_pin_inst_t *pin_ptr) {
         //update globals
         float tmp;
         memcpy(&tmp, &sserial_slave[scale_address], 4);
-        PIN(scale) = tmp;
+        pins->scale = tmp;
         if(lbp.ai) {  //auto increment address by datasize
           address += (1 << lbp.ds);
         }
@@ -533,22 +514,24 @@ static void frt_func(float period, void *ctx_ptr, hal_pin_inst_t *pin_ptr) {
     }
   }
 
-  if(timeout > PIN(timeout)) {  //TODO: clamping
-    PIN(connected) = 0;
-    PIN(error)     = 1;
-    PIN(pos_cmd)   = 0;
-    PIN(pos_cmd_d) = 0;
-    PIN(out0)      = 0;
-    PIN(out1)      = 0;
-    PIN(out2)      = 0;
-    PIN(out3)      = 0;
-    PIN(enable)    = 0;
+  if(timeout > pins->timeout) {  //TODO: clamping
+    pins->connected = 0;
+    pins->error     = 1;
+    pins->pos_cmd   = 0;
+    pins->pos_cmd_d = 0;
+    pins->out0      = 0;
+    pins->out1      = 0;
+    pins->out2      = 0;
+    pins->out3      = 0;
+    pins->enable    = 0;
     rxpos          = bufferpos;
+    timeout = 0;
   } else {
-    PIN(connected) = 1;
-    PIN(error)     = 0;
+    pins->connected = 1;
+    pins->error     = 0;
   }
   rxpos = rxpos % sizeof(rxbuf);
   timeout++;
+  gpio_put(16, false);
 }
 
