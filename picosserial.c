@@ -10,7 +10,7 @@
 #include "hardware/dma.h"
 
 #define ALARM_NUM 0
-#define ALARM_IRQ TIMER_IRQ_0
+#define ALARM_IRQ timer_hardware_alarm_get_irq_num(timer_hw, ALARM_NUM)
 #define DELAY 50 // 20 KHZ frt_func call
 
 sserial_pin_ctx_t pin_struct = {

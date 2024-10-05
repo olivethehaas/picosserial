@@ -177,7 +177,7 @@ static void send(uint8_t len, uint8_t docrc) {
 void enableSysTick(void)
 {
   systick_hw->csr = 0;
-  systick_hw->rvr = M0PLUS_SYST_RVR_BITS;                                                                        // 24 bits
+  systick_hw->rvr = M33_SYST_RVR_BITS;                                                                        // 24 bits
   systick_hw->csr = 0x5; //processor clock, no exception
 }
 
