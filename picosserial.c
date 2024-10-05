@@ -74,6 +74,7 @@ int main()
 
   while (1)
   {
-    tight_loop_contents();
+    printf("dro X = %f, Y = %f, Z = %f\n",pin_struct.x_pos , pin_struct.y_pos, pin_struct.z_pos);
+    sleep_ms(100);
   }
 }

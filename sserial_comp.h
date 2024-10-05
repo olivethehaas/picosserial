@@ -4,9 +4,9 @@
 
 typedef struct { // found in sserial.c
    float error;
-   float pos_cmd;
-   float pos_cmd_d;
-   float pos_advance;   
+   float x_pos;
+   float y_pos;
+   float z_pos;   
    float pos_fb; 
    float vel_fb;      
    float crc_error;
